@@ -1,0 +1,48 @@
+#! /usr/bin/perl
+
+# print a list of running LXC containers and their memory usage
+
+# Avi 2017-06-21
+
+use strict;
+use 5.010;
+
+my $page_size = `getconf PAGESIZE`;
+chomp($page_size);
+
+die ("Failed to get page size") unless $page_size =~ m/^\d+$/ and $page_size > 0;
+
+my %procs;
+foreach my $line (`ps -e -o pid,sz,rss`){
+	next if $line =~ m/PID\s+SZ/;
+	$line =~ s/^\s+//;
+	my ($pid,$size,$rss) = split(m/\s+/, $line);
+	$procs{$pid}->{sz} = $size;
+	$procs{$pid}->{rss} = $rss;
+}
+
+my $cpu_dir = '/sys/fs/cgroup/cpu/lxc/';
+opendir(my $dh, $cpu_dir) or die ("Failed to open dir '$cpu_dir' :$!");
+my @container_names = grep{ ! /^[\.-]/ && -d $cpu_dir."/".$_} readdir($dh); 
+
+my %containers;
+foreach my $container_name (@container_names){
+
+	my $ct_dir = $cpu_dir.'/'.$container_name.'/';
+	$ct_dir =~ s#//#/#g;
+
+	my $procs_list = $ct_dir.'tasks';
+
+	open(my $procs_fh, "<", $procs_list) or warn "Failed to open procs file '$procs_list' : $!" and next;
+	while (my $pid = readline($procs_fh)){
+		chomp($pid);
+		$containers{$container_name}->{mem} += $procs{$pid}->{sz} * $page_size;
+		$containers{$container_name}->{rss} += $procs{$pid}->{rss} * 1024 # rss in kb; multiply to have everything in b
+	}
+}
+
+printf STDERR ("%-8s %-8s %s\n", "MEM", "RSS", "CONTAINER");
+foreach my $container_name (sort(keys(%containers))){
+	printf("%-8s %-8s %s\n", int($containers{$container_name}->{mem}/(1024**2)), int($containers{$container_name}->{rss}/(1024**2)), $container_name);
+}
+
